@@ -54,6 +54,7 @@ class LabelLineBase {
         this.position = [];
         this.angle = 0;
         this.offset = layout.offset.slice();
+        this.segment_index = null; // last line segment index covered by label
         this.obbs = [];
         this.aabbs = [];
         this.type = ''; // "curved" or "straight" to be set by child class
@@ -66,9 +67,11 @@ class LabelLineBase {
     static splitLineByOrientation(line){
         let current_line = [line[0]];
         let current_length = 0;
+        let current_start = 0;
         let max_length = 0;
         let orientation = 0;
         let longest_line = current_line;
+        let longest_start = current_start;
         let flip = false;
 
         for (let i = 1; i < line.length; i++) {
@@ -83,15 +86,18 @@ class LabelLineBase {
                     current_length += length;
                     if (current_length > max_length){
                         longest_line = current_line;
+                        longest_start = current_start;
                         max_length = current_length;
                         flip = false;
                     }
                 }
                 else {
                     current_line = [prev_pt, pt];
+                    current_start = i - 1;
                     current_length = length;
                     if (current_length > max_length){
                         longest_line = current_line;
+                        longest_start = current_start;
                         max_length = current_length;
                         flip = false;
                     }
@@ -105,6 +111,7 @@ class LabelLineBase {
                     current_length += length;
                     if (current_length > max_length){
                         longest_line = current_line;
+                        longest_start = current_start;
                         max_length = current_length;
                         flip = true;
                     }
@@ -112,9 +119,11 @@ class LabelLineBase {
                 else {
                     // prepend points (reverse order)
                     current_line = [pt, prev_pt];
+                    current_start = i - 1;
                     current_length = length;
                     if (current_length > max_length){
                         longest_line = current_line;
+                        longest_start = current_start;
                         max_length = current_length;
                         flip = true;
                     }
@@ -134,6 +143,7 @@ class LabelLineBase {
                 current_length += length;
                 if (current_length > max_length){
                     longest_line = current_line;
+                    longest_start = current_start;
                     max_length = current_length;
 
                     flip = (orientation === -1);
@@ -141,7 +151,7 @@ class LabelLineBase {
             }
         }
 
-        return [longest_line, flip];
+        return [longest_line, flip, longest_start];
     }
 
     // Add each bounding box to the collision pass
@@ -221,9 +231,10 @@ class LabelLineStraight extends LabelLineBase {
     fit (size, line, layout, tolerance){
         let upp = layout.units_per_pixel;
         let flipped; // boolean indicating if orientation of line is changed
+        let first_segment;
 
         // Make new copy of line, with consistent orientation
-        [line, flipped] = LabelLineBase.splitLineByOrientation(line);
+        [line, flipped, first_segment] = LabelLineBase.splitLineByOrientation(line);
 
         // matches for "left" or "right" labels where the offset angle is dependent on the geometry
         if (typeof layout.orientation === 'number'){
@@ -304,6 +315,7 @@ class LabelLineStraight extends LabelLineBase {
                     this.updateBBoxes(this.position, size, this.angle, this.angle, this.offset);
 
                     if (this.inTileBounds()) {
+                        this.segment_index = first_segment + ahead_index - 1;
                         return true;
                     }
                 }
@@ -356,12 +368,13 @@ class LabelLineCurved extends LabelLineBase {
     fit (size, line, layout){
         let upp = layout.units_per_pixel;
         let flipped; // boolean determining if the line orientation is reversed
+        let first_segment;
 
         let height_px = Math.max(...size.map(s => s[1])); // use max segment height
         let height = height_px * upp;
 
         // Make new copy of line, with consistent orientation
-        [line, flipped] = LabelLineBase.splitLineByOrientation(line);
+        [line, flipped, first_segment] = LabelLineBase.splitLineByOrientation(line);
 
         // matches for "left" or "right" labels where the offset angle is dependent on the geometry
         if (typeof layout.orientation === 'number'){
@@ -409,6 +422,7 @@ class LabelLineCurved extends LabelLineBase {
 
         // set start position at anchor position
         this.position = anchor;
+        this.segment_index = first_segment + end_index;
 
         // Loop through labels at each zoom level stop
         // TODO: Can be made faster since we are computing every segment for every zoom stop

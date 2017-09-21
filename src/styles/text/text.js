@@ -190,6 +190,7 @@ Object.assign(TextStyle, {
             else {
                 feature_labels = this.buildLabels(text_info.size.collision_size, fq.feature.geometry, fq.layout);
             }
+
             for (let i = 0; i < feature_labels.length; i++) {
                 let fql = Object.create(fq);
                 fql.label = feature_labels[i];
@@ -235,21 +236,27 @@ Object.assign(TextStyle, {
         if (subdiv > 1) {
             // Create multiple labels for line, with each allotted a range of segments
             // in which it will attempt to place
-            let seg_per_div = (line.length - 1) / subdiv;
+            let start = 0;
             for (let i = 0; i < subdiv; i++) {
-                let start = Math.floor(i * seg_per_div);
-                let end = Math.floor((i + 1) * seg_per_div) + 1;
-                let line_segment = line.slice(start, end);
-
+                let line_segment = line.slice(start);
                 let label = LabelLine.create(size, total_size, line_segment, layout);
-                if (label){
+                if (label) {
                     labels.push(label);
+
+                    // next segment range
+                    start += label.segment_index + 1;
+                    if (start >= line.length - 1) {
+                        break; // can't fit any more labels on line
+                    }
+                }
+                else {
+                    break; // if no label placed, line has been exhausted
                 }
             }
         }
         else {
             let label = LabelLine.create(size, total_size, line, layout);
-            if (label){
+            if (label) {
                 labels.push(label);
             }
         }
