@@ -20,6 +20,12 @@ let LabelLine = {
         // The passes done for fitting a label, and provided tolerances for each pass
         // First straight is chosen with a low tolerance. Then curved. Then straight with a higher tolerance.
         const passes = [
+            // { type: 'straight', tolerance : 1 },
+            // // { type: 'straight', tolerance : (layout.no_curving) ? LINE_EXCEED_STRAIGHT_NO_CURVE : LINE_EXCEED_STRAIGHT },
+            // { type: 'curved' },
+            // // { type: 'straight', tolerance : (layout.no_curving) ? LINE_EXCEED_STRAIGHT_NO_CURVE : LINE_EXCEED_STRAIGHT },
+            // { type: 'straight', tolerance : LINE_EXCEED_STAIGHT_LOOSE }
+
             { type: 'straight', tolerance : (layout.no_curving) ? LINE_EXCEED_STRAIGHT_NO_CURVE : LINE_EXCEED_STRAIGHT },
             { type: 'curved' },
             { type: 'straight', tolerance : LINE_EXCEED_STAIGHT_LOOSE }
@@ -154,6 +160,131 @@ class LabelLineBase {
         return [longest_line, flip, longest_start];
     }
 
+    static splitLineByOrientationAll(line){
+        let sections = [];
+
+        let current_line = [line[0]];
+        let current_length = 0;
+        let current_start = 0;
+        let max_length = 0;
+        let orientation = 0;
+        let longest_line = current_line;
+        let longest_start = current_start;
+        let flip = false;
+
+        for (let i = 1; i < line.length; i++) {
+            let pt = line[i];
+            let prev_pt = line[i - 1];
+            let length = Vector.length(Vector.sub(pt, prev_pt));
+
+            if (pt[0] > prev_pt[0]){
+                // positive orientation
+                if (orientation === 1){
+                    current_line.push(pt);
+                    current_length += length;
+                    if (current_length > max_length){
+                        longest_line = current_line;
+                        longest_start = current_start;
+                        max_length = current_length;
+                        flip = false;
+                    }
+                }
+                else {
+                    if (current_line.length > 1) {
+                        sections.push({
+                            line: current_line,
+                            flipped: false,
+                            length: current_length,
+                            start: current_start,
+                            end: i -1
+                        });
+                    }
+
+                    current_line = [prev_pt, pt];
+                    current_start = i - 1;
+                    current_length = length;
+                    if (current_length > max_length){
+                        longest_line = current_line;
+                        longest_start = current_start;
+                        max_length = current_length;
+                        flip = false;
+                    }
+                    orientation = 1;
+                }
+            }
+            else if (pt[0] < prev_pt[0]) {
+                // negative orientation
+                if (orientation === -1){
+                    current_line.unshift(pt);
+                    current_length += length;
+                    if (current_length > max_length){
+                        longest_line = current_line;
+                        longest_start = current_start;
+                        max_length = current_length;
+                        flip = true;
+                    }
+                }
+                else {
+                    if (current_line.length > 1) {
+                        sections.push({
+                            line: current_line,
+                            flipped: true,
+                            length: current_length,
+                            start: current_start,
+                            end: i -1
+                        });
+                    }
+
+                    // prepend points (reverse order)
+                    current_line = [pt, prev_pt];
+                    current_length = length;
+                    current_start = i - 1;
+                    if (current_length > max_length){
+                        longest_line = current_line;
+                        longest_start = current_start;
+                        max_length = current_length;
+                        flip = true;
+                    }
+                    orientation = -1;
+                }
+            }
+            else {
+                // vertical line (doesn't change previous orientation)
+                if (orientation === -1){
+                    current_line.unshift(pt);
+                }
+                else {
+                    current_line.push(pt);
+                    orientation = 1;
+                }
+
+                current_length += length;
+                if (current_length > max_length){
+                    longest_line = current_line;
+                    longest_start = current_start;
+                    max_length = current_length;
+
+                    flip = (orientation === -1);
+                }
+            }
+        }
+
+        // final segment
+        if (current_line.length > 1) {
+            sections.push({
+                line: current_line,
+                flipped: flip,
+                length: current_length,
+                start: current_start,
+                end: line.length
+            });
+        }
+
+        // sort by longest first
+        sections.sort((a, b) => b.length - a.length);
+        return sections;
+    }
+
     // Add each bounding box to the collision pass
     add(bboxes) {
         this.placed = true;
@@ -235,6 +366,7 @@ class LabelLineStraight extends LabelLineBase {
 
         // Make new copy of line, with consistent orientation
         [line, flipped, first_segment] = LabelLineBase.splitLineByOrientation(line);
+        // flipped = false, first_segment = 0;
 
         // matches for "left" or "right" labels where the offset angle is dependent on the geometry
         if (typeof layout.orientation === 'number'){
@@ -282,8 +414,6 @@ class LabelLineStraight extends LabelLineBase {
 
                 // check if label fits geometry
                 if (calcFitness(length, label_length) < tolerance){
-                    let curr_midpt = Vector.mult(Vector.add(curr, ahead_next), 0.5);
-
                     // TODO: modify angle if line chosen within curve_angle_tolerance
                     // Currently line angle is the same as the starting angle, perhaps it should average across segments?
                     this.angle = -next_angle;
@@ -310,12 +440,16 @@ class LabelLineStraight extends LabelLineBase {
                         }
                     }
 
+                    let curr_midpt = Vector.mult(Vector.add(curr, ahead_next), 0.5);
+                    // let curr_midpt = Vector.mult(Vector.add(ahead_curr, ahead_next), 0.5);
+
                     this.position = curr_midpt;
 
                     this.updateBBoxes(this.position, size, this.angle, this.angle, this.offset);
 
                     if (this.inTileBounds()) {
-                        this.segment_index = first_segment + ahead_index - 1;
+                        // this.segment_index = first_segment + ahead_index - 1;
+                        this.segment_index = first_segment + (flipped ? (line.length - 1 - (ahead_index - 1)) : (ahead_index - 1));
                         return true;
                     }
                 }
@@ -367,116 +501,132 @@ class LabelLineCurved extends LabelLineBase {
     // No tolerance is provided because the label must fit entirely within the line geometry.
     fit (size, line, layout){
         let upp = layout.units_per_pixel;
-        let flipped; // boolean determining if the line orientation is reversed
-        let first_segment;
-
         let height_px = Math.max(...size.map(s => s[1])); // use max segment height
         let height = height_px * upp;
 
-        // Make new copy of line, with consistent orientation
-        [line, flipped, first_segment] = LabelLineBase.splitLineByOrientation(line);
-
-        // matches for "left" or "right" labels where the offset angle is dependent on the geometry
         if (typeof layout.orientation === 'number'){
             this.offset[1] += ORIENTED_LABEL_OFFSET_FACTOR * (height_px - layout.vertical_buffer);
-
-            // if line is flipped, or the orientation is "left" (-1), flip the offset's y-axis
-            if (flipped){
-                this.offset[1] *= -1;
-            }
 
             if (layout.orientation === -1){
                 this.offset[1] *= -1;
             }
         }
 
-        let line_lengths = getLineLengths(line);
         let label_lengths = size.map(size => size[0] * upp);
-
-        let total_line_length = line_lengths.reduce((prev, next) => prev + next, 0);
         let total_label_length = label_lengths.reduce((prev, next) => prev + next, 0);
 
-        // if label displacement is longer than the line, no fit can be possible
-        if (total_label_length > total_line_length){
-            return false;
-        }
+        // Split line into sections with consistent orientation
+        // [line, flipped, first_segment] = LabelLineBase.splitLineByOrientation(line);
+        let sections = LabelLineBase.splitLineByOrientationAll(line);
 
-        // find start and end indices that the label can fit on without overlapping tile boundaries
-        // TODO: there is a small probability of a tile boundary crossing on an internal line segment
-        // another option is to create a buffer around the line and check if it overlaps a tile boundary
-        let [start_index, end_index] = LabelLineCurved.checkTileBoundary(line, line_lengths, height, this.offset, upp);
+        for (let s=0; s < sections.length; s++) {
+            line = sections[s].line;
+            let flipped = sections[s].flipped;
+            let first_segment = sections[s].start;
 
-        // need two line segments for a curved label
-        if (end_index - start_index < 2){
-            return false;
-        }
+            // matches for "left" or "right" labels where the offset angle is dependent on the geometry
+            let offset = this.offset;
+            if (typeof layout.orientation === 'number'){
+                offset = this.offset.slice(); // copy offset
 
-        // all positional offsets of the label are relative to the anchor
-        let anchor_index = LabelLineCurved.curvaturePlacement(line, total_line_length, line_lengths, total_label_length, start_index, end_index);
-        let anchor = line[anchor_index];
-
-        // if anchor not found, or greater than the end_index, no fit possible
-        if (anchor_index === -1 || end_index - anchor_index < 2){
-            return false;
-        }
-
-        // set start position at anchor position
-        this.position = anchor;
-        this.segment_index = first_segment + end_index;
-
-        // Loop through labels at each zoom level stop
-        // TODO: Can be made faster since we are computing every segment for every zoom stop
-        // We can skip a segment's calculation once a segment's angle equals its fully zoomed angle
-        for (var i = 0; i < label_lengths.length; i++){
-            this.offsets[i] = [];
-            this.angles[i] = [];
-            this.pre_angles[i] = [];
-
-            // loop through stops (z = [0, .33, .66, .99] + base zoom)
-            for (var j = 0; j < STOPS.length; j++){
-                let stop = STOPS[j];
-
-                // scale the line geometry by the zoom magnification
-                let [new_line, line_lengths] = LabelLineCurved.scaleLine(stop, line);
-                anchor = new_line[anchor_index];
-
-                // calculate label data relative to anchor position
-                let {positions, offsets, angles, pre_angles} = LabelLineCurved.placeAtIndex(anchor_index, new_line, line_lengths, label_lengths);
-
-                // translate 2D offsets into "polar coordinates"" (1D distances with angles)
-                let offsets1d = offsets.map(offset => {
-                    return Math.sqrt(offset[0] * offset[0] + offset[1] * offset[1]) / upp;
-                });
-
-                // Calculate everything that is independent of zoom level (angle for offset, bounding boxes, etc)
-                if (stop === 0){
-                    // use average angle for a global label offset (if offset is specified)
-                    this.angle = 1 / angles.length * angles.reduce((prev, next) => prev + next);
-
-                    // calculate bounding boxes for collision at zoom level 0
-                    for (let i = 0; i < positions.length; i++){
-                        let position = positions[i];
-                        let pre_angle = pre_angles[i];
-                        let width = label_lengths[i];
-                        let angle_segment = pre_angle + angles[i];
-                        let angle_offset = this.angle;
-
-                        let obb = LabelLineBase.createOBB(position, width, height, angle_segment, angle_offset, this.offset, upp);
-                        let aabb = obb.getExtent();
-
-                        this.obbs.push(obb);
-                        this.aabbs.push(aabb);
-                    }
+                // if line is flipped, or the orientation is "left" (-1), flip the offset's y-axis
+                if (flipped){
+                    offset[1] *= -1;
                 }
-
-                // push offsets/angles/pre_angles for each zoom and for each label segment
-                this.offsets[i].push(offsets1d[i]);
-                this.angles[i].push(angles[i]);
-                this.pre_angles[i].push(pre_angles[i]);
             }
+
+            let line_lengths = getLineLengths(line); // TODO: use already calculated segment lengths from sections
+
+            // TODO: use already calculated total section length from sections
+            // let total_line_length = line_lengths.reduce((prev, next) => prev + next, 0);
+            let total_line_length = sections[s].length;
+
+            // if label displacement is longer than the line, no fit can be possible
+            if (total_label_length > total_line_length){
+                return false; // all sections after this are too short, unable to place label
+            }
+
+            // find start and end indices that the label can fit on without overlapping tile boundaries
+            // TODO: there is a small probability of a tile boundary crossing on an internal line segment
+            // another option is to create a buffer around the line and check if it overlaps a tile boundary
+            let [start_index, end_index] = LabelLineCurved.checkTileBoundary(line, line_lengths, height, offset, upp);
+
+            // need two line segments for a curved label
+            if (end_index - start_index < 2){
+                continue; // try next section
+            }
+
+            // all positional offsets of the label are relative to the anchor
+            let anchor_index = LabelLineCurved.curvaturePlacement(line, total_line_length, line_lengths, total_label_length, start_index, end_index);
+            // anchor_index = start_index; // debug, always place at first index
+            let anchor = line[anchor_index];
+
+            // if anchor not found, or greater than the end_index, no fit possible
+            if (anchor_index === -1 || end_index - anchor_index < 2){
+                continue; // try next section
+            }
+
+            // set start position at anchor position
+            this.position = anchor;
+            // this.segment_index = first_segment + end_index;
+            this.segment_index = first_segment + (flipped ? (line.length - 1 - end_index) : end_index);
+
+            // Loop through labels at each zoom level stop
+            // TODO: Can be made faster since we are computing every segment for every zoom stop
+            // We can skip a segment's calculation once a segment's angle equals its fully zoomed angle
+            for (var i = 0; i < label_lengths.length; i++){
+                this.offsets[i] = [];
+                this.angles[i] = [];
+                this.pre_angles[i] = [];
+
+                // loop through stops (z = [0, .33, .66, .99] + base zoom)
+                for (var j = 0; j < STOPS.length; j++){
+                    let stop = STOPS[j];
+
+                    // scale the line geometry by the zoom magnification
+                    let [new_line, line_lengths] = LabelLineCurved.scaleLine(stop, line);
+                    anchor = new_line[anchor_index];
+
+                    // calculate label data relative to anchor position
+                    let {positions, offsets, angles, pre_angles} = LabelLineCurved.placeAtIndex(anchor_index, new_line, line_lengths, label_lengths);
+
+                    // translate 2D offsets into "polar coordinates"" (1D distances with angles)
+                    let offsets1d = offsets.map(offset => {
+                        return Math.sqrt(offset[0] * offset[0] + offset[1] * offset[1]) / upp;
+                    });
+
+                    // Calculate everything that is independent of zoom level (angle for offset, bounding boxes, etc)
+                    if (stop === 0){
+                        // use average angle for a global label offset (if offset is specified)
+                        this.angle = 1 / angles.length * angles.reduce((prev, next) => prev + next); // TODO: only calc if offset specified
+
+                        // calculate bounding boxes for collision at zoom level 0
+                        for (let i = 0; i < positions.length; i++){
+                            let position = positions[i];
+                            let pre_angle = pre_angles[i];
+                            let width = label_lengths[i];
+                            let angle_segment = pre_angle + angles[i];
+                            let angle_offset = this.angle;
+
+                            let obb = LabelLineBase.createOBB(position, width, height, angle_segment, angle_offset, offset, upp);
+                            let aabb = obb.getExtent();
+
+                            this.obbs.push(obb);
+                            this.aabbs.push(aabb);
+                        }
+                    }
+
+                    // push offsets/angles/pre_angles for each zoom and for each label segment
+                    this.offsets[i].push(offsets1d[i]);
+                    this.angles[i].push(angles[i]);
+                    this.pre_angles[i].push(pre_angles[i]);
+                }
+            }
+
+            return true; // placed label, finish
         }
 
-        return true;
+        return false; // unable to place label
     }
 
     // Test if line intersects tile boundary. Return indices at beginning and end of line that are within tile.
@@ -611,6 +761,7 @@ class LabelLineCurved extends LabelLineBase {
         var min_index = total_costs.indexOf(min_total_cost);
         var min_avg_cost = avg_costs[min_index];
 
+        // return total_costs.indexOf(min_total_cost);
         if (min_total_cost < CURVE_MIN_TOTAL_COST && min_avg_cost < CURVE_MIN_AVG_COST){
             // return index with best placement (least curvature)
             return total_costs.indexOf(min_total_cost);
@@ -749,8 +900,36 @@ class LabelLineCurved extends LabelLineBase {
             offsets.push(offset);
         }
 
+        // for (let i = 1; i < positions.length - 1; i++){
+        //     if (indices[i] !== indices[i + 1]) {
+        //         // pre_angles[i] = (pre_angles[i] + pre_angles[i+1]) / 2;
+        //         // pre_angles[i] += Math.PI/2;
+
+        //         let a = pre_angles[i];
+        //         let b = pre_angles[i + 1];
+
+        //         pre_angles[i] = angleLerp(a, b, .25);
+        //         pre_angles[i + 1] = angleLerp(a, b, .75);
+        //     }
+        //     // else if (indices[i] !== indices[i - 1]) {
+        //     //     pre_angles[i] = pre_angles[i - 1];
+        //     // }
+        // }
+
         return [offsets, angles, pre_angles];
     }
+}
+
+// https://gist.github.com/shaunlebron/8832585
+function shortAngleDist(a0,a1) {
+    var max = Math.PI*2;
+    var da = (a1 - a0) % max;
+    return 2*da % max - da;
+}
+
+// https://gist.github.com/shaunlebron/8832585
+function angleLerp(a0,a1,t) {
+    return a0 + shortAngleDist(a0,a1)*t;
 }
 
 // Fitness function (label length / line length)
