@@ -6,10 +6,7 @@ import StyleParser from './styles/style_parser';
 
 let fs = require('fs');
 
-const shaderSrc_ambientLight = fs.readFileSync(__dirname + '/gl/shaders/ambientLight.glsl', 'utf8');
 const shaderSrc_directionalLight = fs.readFileSync(__dirname + '/gl/shaders/directionalLight.glsl', 'utf8');
-const shaderSrc_pointLight = fs.readFileSync(__dirname + '/gl/shaders/pointLight.glsl', 'utf8');
-const shaderSrc_spotLight = fs.readFileSync(__dirname + '/gl/shaders/spotLight.glsl', 'utf8');
 
 // Abstract light
 export default class Light {
@@ -30,13 +27,6 @@ export default class Light {
         }
         else {
             this.diffuse = StyleParser.parseColor(config.diffuse).slice(0, 3);
-        }
-
-        if (config.specular == null || typeof config.specular === 'number') {
-            this.specular = GLSL.expandVec3(config.specular || 0);
-        }
-        else {
-            this.specular = StyleParser.parseColor(config.specular).slice(0, 3);
         }
     }
 
@@ -96,19 +86,11 @@ export default class Light {
         let calculateFunction = `
             vec4 calculateLighting(in vec3 _eyeToPoint, in vec3 _normal, in vec4 _color) {
 
-                // Do initial material calculations over normal, emission, ambient, diffuse and specular values
-                calculateMaterial(_eyeToPoint,_normal);
-
                 // Un roll the loop of individual ligths to calculate
                 ${calculateLights}
 
                 //  Final light intensity calculation
                 vec4 color = vec4(vec3(0.), _color.a); // start with vertex color alpha
-
-                #ifdef TANGRAM_MATERIAL_EMISSION
-                    color.rgb = material.emission.rgb;
-                    color.a *= material.emission.a;
-                #endif
 
                 #ifdef TANGRAM_MATERIAL_AMBIENT
                     color.rgb += light_accumulator_ambient.rgb * _color.rgb * material.ambient.rgb;
@@ -122,11 +104,6 @@ export default class Light {
                 #ifdef TANGRAM_MATERIAL_DIFFUSE
                     color.rgb += light_accumulator_diffuse.rgb * _color.rgb * material.diffuse.rgb;
                     color.a *= material.diffuse.a;
-                #endif
-
-                #ifdef TANGRAM_MATERIAL_SPECULAR
-                    color.rgb += light_accumulator_specular.rgb * material.specular.rgb;
-                    color.a *= material.specular.a;
                 #endif
 
                 // Clamp final color
@@ -162,7 +139,6 @@ export default class Light {
         //  Three common light properties
         _program.uniform('3fv', `u_${this.name}.ambient`, this.ambient);
         _program.uniform('3fv', `u_${this.name}.diffuse`, this.diffuse);
-        _program.uniform('3fv', `u_${this.name}.specular`, this.specular);
     }
 
 }
@@ -170,28 +146,6 @@ export default class Light {
 Light.types = {}; // references to subclasses by short name
 Light.block = 'lighting'; // shader block name
 Light.enabled = true; // lighting can be globally enabled/disabled
-
-
-// Light subclasses
-class AmbientLight extends Light {
-
-    constructor(view, config) {
-        super(view, config);
-        this.type = 'ambient';
-        this.struct_name = 'AmbientLight';
-    }
-
-    // Inject struct and calculate function
-    static inject() {
-        ShaderProgram.addBlock(Light.block, shaderSrc_ambientLight);
-    }
-
-    setupProgram (_program) {
-        _program.uniform('3fv', `u_${this.name}.ambient`, this.ambient);
-    }
-
-}
-Light.types['ambient'] = AmbientLight;
 
 class DirectionalLight extends Light {
 
@@ -240,136 +194,3 @@ class DirectionalLight extends Light {
 
 }
 Light.types['directional'] = DirectionalLight;
-
-
-class PointLight extends Light {
-
-    constructor (view, config) {
-        super(view, config);
-        this.type = 'point';
-        this.struct_name = 'PointLight';
-
-        this.position = config.position || [0, 0, '100px'];
-        this.position_eye = []; // position in eyespace
-        this.origin = config.origin || 'ground';
-        this.attenuation = !isNaN(parseFloat(config.attenuation)) ? parseFloat(config.attenuation) : 0;
-
-        if (config.radius) {
-            if (Array.isArray(config.radius) && config.radius.length === 2) {
-                this.radius = config.radius;
-            }
-            else {
-                this.radius = [null, config.radius];
-            }
-        }
-        else {
-            this.radius = null;
-        }
-    }
-
-    // Inject struct and calculate function
-    static inject () {
-        ShaderProgram.addBlock(Light.block, shaderSrc_pointLight);
-    }
-
-    // Inject isntance-specific settings
-    inject() {
-        super.inject();
-
-        ShaderProgram.defines['TANGRAM_POINTLIGHT_ATTENUATION_EXPONENT'] = (this.attenuation !== 0);
-        ShaderProgram.defines['TANGRAM_POINTLIGHT_ATTENUATION_INNER_RADIUS'] = (this.radius != null && this.radius[0] != null);
-        ShaderProgram.defines['TANGRAM_POINTLIGHT_ATTENUATION_OUTER_RADIUS'] = (this.radius != null);
-    }
-
-    update () {
-        this.updateEyePosition();
-    }
-
-    updateEyePosition () {
-        if (this.origin === 'world') {
-            // For world origin, format is: [longitude, latitude, meters (default) or pixels w/px units]
-
-            // Move light's world position into camera space
-            let [x, y] = Geo.latLngToMeters(this.position);
-            this.position_eye[0] = x - this.view.camera.position_meters[0];
-            this.position_eye[1] = y - this.view.camera.position_meters[1];
-
-            this.position_eye[2] = StyleParser.convertUnits(this.position[2],
-                { zoom: this.view.zoom, meters_per_pixel: Geo.metersPerPixel(this.view.zoom) });
-            this.position_eye[2] = this.position_eye[2] - this.view.camera.position_meters[2];
-        }
-        else if (this.origin === 'ground' || this.origin === 'camera') {
-            // For camera or ground origin, format is: [x, y, z] in meters (default) or pixels w/px units
-
-            // Light is in camera space by default
-            this.position_eye = StyleParser.convertUnits(this.position,
-                { zoom: this.view.zoom, meters_per_pixel: Geo.metersPerPixel(this.view.zoom) });
-
-            if (this.origin === 'ground') {
-                // Leave light's xy in camera space, but z needs to be moved relative to ground plane
-                this.position_eye[2] = this.position_eye[2] - this.view.camera.position_meters[2];
-            }
-        }
-        this.position_eye[3] = 1;
-    }
-
-    setupProgram (_program) {
-        super.setupProgram(_program);
-
-        _program.uniform('4fv', `u_${this.name}.position`, this.position_eye);
-
-        if(ShaderProgram.defines['TANGRAM_POINTLIGHT_ATTENUATION_EXPONENT']) {
-            _program.uniform('1f', `u_${this.name}.attenuationExponent`, this.attenuation);
-        }
-
-        if(ShaderProgram.defines['TANGRAM_POINTLIGHT_ATTENUATION_INNER_RADIUS']) {
-            _program.uniform('1f', `u_${this.name}.innerRadius`,
-                StyleParser.convertUnits(this.radius[0],
-                    { zoom: this.view.zoom, meters_per_pixel: Geo.metersPerPixel(this.view.zoom) }));
-        }
-
-        if(ShaderProgram.defines['TANGRAM_POINTLIGHT_ATTENUATION_OUTER_RADIUS']) {
-            _program.uniform('1f', `u_${this.name}.outerRadius`,
-                StyleParser.convertUnits(this.radius[1],
-                    { zoom: this.view.zoom, meters_per_pixel: Geo.metersPerPixel(this.view.zoom) }));
-        }
-    }
-}
-Light.types['point'] = PointLight;
-
-
-class SpotLight extends PointLight {
-
-    constructor (view, config) {
-        super(view, config);
-        this.type = 'spotlight';
-        this.struct_name = 'SpotLight';
-
-        this.direction = this._direction = (config.direction || [0, 0, -1]).map(parseFloat); // [x, y, z]
-        this.exponent = config.exponent ? parseFloat(config.exponent) : 0.2;
-        this.angle = config.angle ? parseFloat(config.angle) : 20;
-    }
-
-    get direction () {
-        return this._direction;
-    }
-
-    set direction (v) {
-        this._direction = Vector.normalize(Vector.copy(v));
-    }
-
-    // Inject struct and calculate function
-    static inject () {
-        ShaderProgram.addBlock(Light.block, shaderSrc_spotLight);
-    }
-
-    setupProgram (_program) {
-        super.setupProgram(_program);
-
-        _program.uniform('3fv', `u_${this.name}.direction`, this.direction);
-        _program.uniform('1f', `u_${this.name}.spotCosCutoff`, Math.cos(this.angle * 3.14159 / 180));
-        _program.uniform('1f', `u_${this.name}.spotExponent`, this.exponent);
-    }
-
-}
-Light.types['spotlight'] = SpotLight;

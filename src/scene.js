@@ -1044,6 +1044,9 @@ export default class Scene {
             light.visible = (light.visible === false) ? false : true;
             if (light.visible) {
                 this.lights[light.name] = Light.create(this.view, light);
+                if (this.lights[light.name] == null) {
+                    delete this.lights[light.name];
+                }
             }
         }
         Light.inject(this.lights);

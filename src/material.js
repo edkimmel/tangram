@@ -4,7 +4,7 @@ import StyleParser from './styles/style_parser';
 let fs = require('fs');
 const shaderSrc_material = fs.readFileSync(__dirname + '/gl/shaders/material.glsl', 'utf8');
 
-const material_props = ['emission', 'ambient', 'diffuse', 'specular'];
+const material_props = ['ambient', 'diffuse'];
 
 export default class Material {
     constructor (config) {
@@ -15,15 +15,7 @@ export default class Material {
         material_props.forEach(prop => {
             const value = config[prop];
             if (value != null) {
-                if (value.texture) {
-                    this[prop] = {
-                        texture: value.texture,
-                        mapping: value.mapping || 'spheremap',
-                        scale: GLSL.expandVec3(value.scale != null ? value.scale : 1),
-                        amount: GLSL.expandVec4(value.amount != null ? value.amount : 1)
-                    };
-                }
-                else if (typeof value === 'number' || Array.isArray(value)) {
+                if (typeof value === 'number' || Array.isArray(value)) {
                     this[prop] = { amount: GLSL.expandVec4(value) };
                 }
                 else if (typeof value === 'string') {
@@ -34,21 +26,6 @@ export default class Material {
                 }
             }
         });
-
-        // Extra specular props
-        if (this.specular) {
-            this.specular.shininess = config.shininess ? parseFloat(config.shininess) : 0.2;
-        }
-
-        // Normal mapping
-        if (config.normal != null) {
-            this.normal = {
-                texture: config.normal.texture,
-                mapping: config.normal.mapping || 'triplanar',
-                scale: GLSL.expandVec3(config.normal.scale != null ? config.normal.scale : 1),
-                amount: config.normal.amount != null ? config.normal.amount : 1
-            };
-        }
     }
 
     // Determine if a material config block has sufficient properties to create a material
@@ -57,10 +34,8 @@ export default class Material {
             return false;
         }
 
-        if (config.emission == null &&
-            config.ambient == null &&
-            config.diffuse == null &&
-            config.specular == null) {
+        if (config.ambient == null &&
+            config.diffuse == null) {
             return false;
         }
 
@@ -77,23 +52,7 @@ export default class Material {
             let def = `TANGRAM_MATERIAL_${prop.toUpperCase()}`;
             let texdef = def + '_TEXTURE';
             style.defines[def] = (this[prop] != null);
-            if (this[prop] && this[prop].texture) {
-                style.defines[texdef] = true;
-                style.defines[texdef + '_' + this[prop].mapping.toUpperCase()] = true;
-                style.defines[`TANGRAM_MATERIAL_TEXTURE_${this[prop].mapping.toUpperCase()}`] = true;
-                style.texcoords = style.texcoords || (this[prop].mapping === 'uv');
-            }
         });
-
-        // Normal mapping
-        // As anove, sets flags to keep track of each unique mapping type being used, e.g.:
-        //   TANGRAM_MATERIAL_TEXTURE_SPHEREMAP
-        if (this.normal && this.normal.texture) {
-            style.defines['TANGRAM_MATERIAL_NORMAL_TEXTURE'] = true;
-            style.defines['TANGRAM_MATERIAL_NORMAL_TEXTURE_' + this.normal.mapping.toUpperCase()] = true;
-            style.defines[`TANGRAM_MATERIAL_TEXTURE_${this.normal.mapping.toUpperCase()}`] = true;
-            style.texcoords = style.texcoords || (this.normal.mapping === 'uv');
-        }
 
         style.replaceShaderBlock(Material.block, shaderSrc_material, 'Material');
         style.addShaderBlock('setup', '\nmaterial = u_material;\n', 'Material');
@@ -104,27 +63,9 @@ export default class Material {
         // u_material.diffuse, u_material.diffuseScale u_material_diffuse_texture
         material_props.forEach(prop => {
             if (this[prop]) {
-                if (this[prop].texture) {
-                    _program.setTextureUniform(`u_material_${prop}_texture`, this[prop].texture);
-                    _program.uniform('3fv', `u_material.${prop}Scale`, this[prop].scale);
-                    _program.uniform('4fv', `u_material.${prop}`, this[prop].amount);
-                } else if (this[prop].amount) {
-                    _program.uniform('4fv', `u_material.${prop}`, this[prop].amount);
-                }
+                _program.uniform('4fv', `u_material.${prop}`, this[prop].amount);
             }
         });
-
-        // Extra specular props
-        if (this.specular) {
-            _program.uniform('1f', 'u_material.shininess', this.specular.shininess);
-        }
-
-        // Normal mapping
-        if (this.normal && this.normal.texture) {
-            _program.setTextureUniform('u_material_normal_texture', this.normal.texture);
-            _program.uniform('3fv', 'u_material.normalScale', this.normal.scale);
-            _program.uniform('1f', 'u_material.normalAmount', this.normal.amount);
-        }
     }
 }
 
